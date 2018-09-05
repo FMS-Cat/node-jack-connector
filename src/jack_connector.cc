@@ -35,18 +35,17 @@
 #include <errno.h>
 #include <uv.h>
 
-#define ERR_MSG_NEED_TO_OPEN_JACK_CLIENT "JACK-client is not opened, need to open JACK-client"
 #define THROW_ERR(Message) \
         { \
-            ThrowException(Exception::Error(String::New(Message))); \
-            return scope.Close(Undefined()); \
+            isolate->ThrowException(Exception::Error(String::NewFromUtf8(isolate, Message))); \
+            return; \
         }
 #define STR_SIZE 256
 #define MAX_PORTS 64
 #define NEED_JACK_CLIENT_OPENED() \
         { \
         if (client == 0 && !closing) \
-            THROW_ERR(ERR_MSG_NEED_TO_OPEN_JACK_CLIENT); \
+            THROW_ERR("JACK-client is not opened, need to open JACK-client"); \
         }
 
 using namespace v8;
@@ -84,7 +83,7 @@ uv_work_t *baton;
 uv_work_t *close_baton;
 static uv_sem_t semaphore;
 
-Handle<Value> deactivateSync(const Arguments &args);
+void deactivateSync(const FunctionCallbackInfo<Value>& args); // declaration
 void uv_work_plug(uv_work_t* task) {}
 
 /**
@@ -97,10 +96,10 @@ void uv_work_plug(uv_work_t* task) {}
  *   console.log(jackConnector.getVersion());
  *     // string of version, see VERSION macros
  */
-Handle<Value> getVersion(const Arguments &args) // {{{1
+void getVersion(const FunctionCallbackInfo<Value>& args) // {{{1
 {
-    HandleScope scope;
-    return scope.Close(String::New(VERSION));
+    Isolate* isolate = args.GetIsolate();
+    args.GetReturnValue().Set(String::NewFromUtf8(isolate, VERSION));
 } // getVersion() }}}1
 
 /**
@@ -113,10 +112,10 @@ Handle<Value> getVersion(const Arguments &args) // {{{1
  *   console.log(jackConnector.checkClientOpenedSync());
  *     // true if client opened or false if closed
  */
-Handle<Value> checkClientOpenedSync(const Arguments &args) // {{{1
+void checkClientOpenedSync(const FunctionCallbackInfo<Value>& args) // {{{1
 {
-    HandleScope scope;
-    return scope.Close(Boolean::New(client != 0 && !closing));
+    Isolate* isolate = args.GetIsolate();
+    args.GetReturnValue().Set(Boolean::New(isolate, client != 0 && !closing));
 } // checkClientOpenedSync() }}}1
 
 /**
@@ -128,14 +127,15 @@ Handle<Value> checkClientOpenedSync(const Arguments &args) // {{{1
  *   var jackConnector = require('jack-connector');
  *   jackConnector.openClientSync('JACK_connector_client_name');
  */
-Handle<Value> openClientSync(const Arguments &args) // {{{1
+void openClientSync(const FunctionCallbackInfo<Value>& args) // {{{1
 {
-    HandleScope scope;
+    Isolate* isolate = args.GetIsolate();
 
-    if (client != 0 || closing)
+    if (client != 0 || closing) {
         THROW_ERR("You need close old JACK-client before open new");
+    }
 
-    String::AsciiValue arg_client_name(args[0]->ToString());
+    String::Utf8Value arg_client_name(isolate, args[0]);
     char *client_name = *arg_client_name;
 
     for (unsigned int i=0; ; i++) {
@@ -160,22 +160,20 @@ Handle<Value> openClientSync(const Arguments &args) // {{{1
 
     jack_set_process_callback(client, jack_process, 0);
     process = true;
-
-    return scope.Close(Undefined());
 } // openClientSync() }}}1
 
 // uv_close_task() {{{1
 
 #define UV_CLOSE_TASK_CLEANUP() \
         { \
-            scope.Close(Undefined()); \
             delete task; \
             close_baton = NULL; \
         }
 #define UV_CLOSE_TASK_CLEANUP_CALLBACKS() \
         { \
             if (hasCloseCallback) { \
-                closeCallback->Call(Context::GetCurrent()->Global(), 0, NULL); \
+                Local<Function> cb = Local<Function>::New( isolate, closeCallback ); \
+                cb->Call(isolate->GetCurrentContext()->Global(), 0, NULL); \
                 hasCloseCallback = false; \
             } \
             if (hasProcessCallback) { \
@@ -193,9 +191,10 @@ Handle<Value> openClientSync(const Arguments &args) // {{{1
             if (hasCloseCallback) { \
                 const uint8_t argc = 1; \
                 Local<Value> argv[argc] = { \
-                    Local<Value>::New( err ), \
+                    Local<Value>::New( isolate, err ), \
                 }; \
-                closeCallback->Call(Context::GetCurrent()->Global(), argc, argv); \
+                Local<Function> cb = Local<Function>::New( isolate, closeCallback ); \
+                cb->Call(isolate->GetCurrentContext()->Global(), argc, argv); \
                 hasCloseCallback = false; \
             } \
             UV_CLOSE_TASK_STOP(); \
@@ -203,7 +202,7 @@ Handle<Value> openClientSync(const Arguments &args) // {{{1
 
 void uv_close_task(uv_work_t* task, int status)
 {
-    HandleScope scope;
+    Isolate *isolate = Isolate::GetCurrent();
 
     if (baton) {
         UV_CLOSE_TASK_CLEANUP();
@@ -215,16 +214,18 @@ void uv_close_task(uv_work_t* task, int status)
 
     // deactivate first if client activated
     if (client_active) {
-        if (jack_deactivate(client) != 0)
+        if (jack_deactivate(client) != 0) {
             UV_CLOSE_TASK_EXCEPTION(
-                Exception::Error(String::New("Couldn't deactivate JACK-client")));
+                Exception::Error(String::NewFromUtf8(isolate, "Couldn't deactivate JACK-client"))
+            );
+        }
 
         client_active = 0;
     }
 
     if (jack_client_close(client) != 0)
         UV_CLOSE_TASK_EXCEPTION(
-            Exception::Error(String::New("Couldn't close JACK-client")));
+            Exception::Error(String::NewFromUtf8(isolate, "Couldn't close JACK-client")));
 
     client = 0;
 
@@ -234,7 +235,6 @@ void uv_close_task(uv_work_t* task, int status)
 
     closing = false;
 
-    scope.Close(Undefined());
     delete task;
     close_baton = NULL;
 } // uv_close_task() }}}1
@@ -252,9 +252,9 @@ void uv_close_task(uv_work_t* task, int status)
  * @async
  * @TODO free jack ports
  */
-Handle<Value> closeClient(const Arguments &args) // {{{1
+void closeClient(const FunctionCallbackInfo<Value>& args) // {{{1
 {
-    HandleScope scope;
+    Isolate* isolate = args.GetIsolate();
 
     if (closing) {
         THROW_ERR("Already started closing JACK-client");
@@ -262,20 +262,20 @@ Handle<Value> closeClient(const Arguments &args) // {{{1
         closing = true;
     }
 
-    if (client == 0) THROW_ERR("JACK-client already closed");
+    if (client == 0) {
+        THROW_ERR("JACK-client already closed");
+    }
 
     process = false;
 
     if (args[0]->IsFunction()) {
         Local<Function> callback = Local<Function>::Cast( args[0] );
-        closeCallback = Persistent<Function>::New( callback );
+        closeCallback.Reset(isolate, callback);
         hasCloseCallback = true;
     }
 
     close_baton = new uv_work_t();
     uv_queue_work(uv_default_loop(), close_baton, uv_work_plug, uv_close_task);
-
-    return scope.Close(Undefined());
 } // closeClient() }}}1
 
 /**
@@ -290,12 +290,12 @@ Handle<Value> closeClient(const Arguments &args) // {{{1
  *   jackConnector.registerInPortSync('in_1');
  *   jackConnector.registerInPortSync('in_2');
  */
-Handle<Value> registerInPortSync(const Arguments &args) // {{{1
+void registerInPortSync(const FunctionCallbackInfo<Value>& args) // {{{1
 {
-    HandleScope scope;
+    Isolate* isolate = args.GetIsolate();
     NEED_JACK_CLIENT_OPENED();
 
-    String::AsciiValue port_name(args[0]->ToString());
+    String::Utf8Value port_name(isolate, args[0]);
 
     capture_ports[own_in_ports_size] = jack_port_register(
         client,
@@ -306,8 +306,6 @@ Handle<Value> registerInPortSync(const Arguments &args) // {{{1
     );
 
     reset_own_ports_list();
-
-    return scope.Close(Undefined());
 } // registerInPortSync() }}}1
 
 /**
@@ -321,12 +319,12 @@ Handle<Value> registerInPortSync(const Arguments &args) // {{{1
  *   jackConnector.registerOutPortSync('out_1');
  *   jackConnector.registerOutPortSync('out_2');
  */
-Handle<Value> registerOutPortSync(const Arguments &args) // {{{1
+void registerOutPortSync(const FunctionCallbackInfo<Value>& args) // {{{1
 {
-    HandleScope scope;
+    Isolate* isolate = args.GetIsolate();
     NEED_JACK_CLIENT_OPENED();
 
-    String::AsciiValue port_name(args[0]->ToString());
+    String::Utf8Value port_name(isolate, args[0]);
 
     playback_ports[own_out_ports_size] = jack_port_register(
         client,
@@ -337,8 +335,6 @@ Handle<Value> registerOutPortSync(const Arguments &args) // {{{1
     );
 
     reset_own_ports_list();
-
-    return scope.Close(Undefined());
 } // registerOutPortSync() }}}1
 
 /**
@@ -356,12 +352,12 @@ Handle<Value> registerOutPortSync(const Arguments &args) // {{{1
  * @TODO deactivating (for stop processing before update ports list)
  * @TODO remove port from ports list
  */
-Handle<Value> unregisterPortSync(const Arguments &args) // {{{1
+void unregisterPortSync(const FunctionCallbackInfo<Value>& args) // {{{1
 {
-    HandleScope scope;
+    Isolate* isolate = args.GetIsolate();
     NEED_JACK_CLIENT_OPENED();
 
-    String::AsciiValue arg_port_name(args[0]->ToString());
+    String::Utf8Value arg_port_name(isolate, args[0]);
     char full_port_name[STR_SIZE];
     char *port_name = *arg_port_name;
 
@@ -392,8 +388,6 @@ Handle<Value> unregisterPortSync(const Arguments &args) // {{{1
     // .....
 
     reset_own_ports_list();
-
-    return scope.Close(Undefined());
 } // unregisterPortSync() }}}1
 
 /**
@@ -408,16 +402,11 @@ Handle<Value> unregisterPortSync(const Arguments &args) // {{{1
  *     console.log('JACK-client is not active');
  * @returns {v8::Boolean} result True - client is active, false - client is not active
  */
-Handle<Value> checkActiveSync(const Arguments &args) // {{{1
+void checkActiveSync(const FunctionCallbackInfo<Value>& args) // {{{1
 {
-    HandleScope scope;
+    Isolate* isolate = args.GetIsolate();
     NEED_JACK_CLIENT_OPENED();
-
-    if (::client_active > 0) {
-        return scope.Close(Boolean::New(true));
-    } else {
-        return scope.Close(Boolean::New(false));
-    }
+    args.GetReturnValue().Set(Boolean::New(isolate, ::client_active > 0));
 } // checkActiveSync() }}}1
 
 /**
@@ -429,9 +418,9 @@ Handle<Value> checkActiveSync(const Arguments &args) // {{{1
  *   jackConnector.openClientSync('JACK_connector_client_name');
  *   jackConnector.activateSync();
  */
-Handle<Value> activateSync(const Arguments &args) // {{{1
+void activateSync(const FunctionCallbackInfo<Value>& args) // {{{1
 {
-    HandleScope scope;
+    Isolate* isolate = args.GetIsolate();
     NEED_JACK_CLIENT_OPENED();
 
     if (client_active) THROW_ERR("JACK-client already activated");
@@ -439,8 +428,6 @@ Handle<Value> activateSync(const Arguments &args) // {{{1
     if (jack_activate(client) != 0) THROW_ERR("Couldn't activate JACK-client");
 
     client_active = 1;
-
-    return scope.Close(Undefined());
 } // activateSync() }}}1
 
 /**
@@ -453,9 +440,9 @@ Handle<Value> activateSync(const Arguments &args) // {{{1
  *   jackConnector.activateSync();
  *   jackConnector.deactivateSync();
  */
-Handle<Value> deactivateSync(const Arguments &args) // {{{1
+void deactivateSync(const FunctionCallbackInfo<Value>& args) // {{{1
 {
-    HandleScope scope;
+    Isolate* isolate = args.GetIsolate();
     NEED_JACK_CLIENT_OPENED();
 
     if (! client_active) THROW_ERR("JACK-client is not active");
@@ -463,8 +450,6 @@ Handle<Value> deactivateSync(const Arguments &args) // {{{1
     if (jack_deactivate(client) != 0) THROW_ERR("Couldn't deactivate JACK-client");
 
     client_active = 0;
-
-    return scope.Close(Undefined());
 } // deactivateSync() }}}1
 
 /**
@@ -479,18 +464,18 @@ Handle<Value> deactivateSync(const Arguments &args) // {{{1
  *   jackConnector.activateSync();
  *   jackConnector.connectPortSync('system:capture_1', 'system:playback_1');
  */
-Handle<Value> connectPortSync(const Arguments &args) // {{{1
+void connectPortSync(const FunctionCallbackInfo<Value>& args) // {{{1
 {
-    HandleScope scope;
+    Isolate* isolate = args.GetIsolate();
     NEED_JACK_CLIENT_OPENED();
 
     if (! client_active) THROW_ERR("JACK-client is not active");
 
-    String::AsciiValue src_port_name(args[0]->ToString());
+    String::Utf8Value src_port_name(isolate, args[0]);
     jack_port_t *src_port = jack_port_by_name(client, *src_port_name);
     if (! src_port) THROW_ERR("Non existing source port");
 
-    String::AsciiValue dst_port_name(args[1]->ToString());
+    String::Utf8Value dst_port_name(isolate, args[1]);
     jack_port_t *dst_port = jack_port_by_name(client, *dst_port_name);
     if (! dst_port) THROW_ERR("Non existing destination port");
 
@@ -501,8 +486,6 @@ Handle<Value> connectPortSync(const Arguments &args) // {{{1
 
     int error = jack_connect(client, *src_port_name, *dst_port_name);
     if (error != 0 && error != EEXIST) THROW_ERR("Failed to connect ports");
-
-    return scope.Close(Undefined());
 } // connectPortSync() }}}1
 
 /**
@@ -517,18 +500,18 @@ Handle<Value> connectPortSync(const Arguments &args) // {{{1
  *   jackConnector.activateSync();
  *   jackConnector.disconnectPortSync('system:capture_1', 'system:playback_1');
  */
-Handle<Value> disconnectPortSync(const Arguments &args) // {{{1
+void disconnectPortSync(const FunctionCallbackInfo<Value>& args) // {{{1
 {
-    HandleScope scope;
+    Isolate* isolate = args.GetIsolate();
     NEED_JACK_CLIENT_OPENED();
 
     if (! client_active) THROW_ERR("JACK-client is not active");
 
-    String::AsciiValue src_port_name(args[0]->ToString());
+    String::Utf8Value src_port_name(isolate, args[0]);
     jack_port_t *src_port = jack_port_by_name(client, *src_port_name);
     if (! src_port) THROW_ERR("Non existing source port");
 
-    String::AsciiValue dst_port_name(args[1]->ToString());
+    String::Utf8Value dst_port_name(isolate, args[1]);
     jack_port_t *dst_port = jack_port_by_name(client, *dst_port_name);
     if (! dst_port) THROW_ERR("Non existing destination port");
 
@@ -536,8 +519,6 @@ Handle<Value> disconnectPortSync(const Arguments &args) // {{{1
         if (jack_disconnect(client, *src_port_name, *dst_port_name))
             THROW_ERR("Failed to disconnect ports");
     }
-
-    return scope.Close(Undefined());
 } // disconnectPortSync() }}}1
 
 /**
@@ -553,9 +534,9 @@ Handle<Value> disconnectPortSync(const Arguments &args) // {{{1
  *     // prints: [ "system:playback_1", "system:playback_2",
  *     //           "system:capture_1", "system:capture_2" ]
  */
-Handle<Value> getAllPortsSync(const Arguments &args) // {{{1
+void getAllPortsSync(const FunctionCallbackInfo<Value>& args) // {{{1
 {
-    HandleScope scope;
+    Isolate* isolate = args.GetIsolate();
     NEED_JACK_CLIENT_OPENED();
 
     bool withOwn = true;
@@ -565,7 +546,7 @@ Handle<Value> getAllPortsSync(const Arguments &args) // {{{1
 
     Handle<Array> allPortsList = get_ports(withOwn, 0);
 
-    return scope.Close(allPortsList);
+    args.GetReturnValue().Set(allPortsList);
 } // getAllPortsSync() }}}1
 
 /**
@@ -580,9 +561,9 @@ Handle<Value> getAllPortsSync(const Arguments &args) // {{{1
  *   console.log(jackConnector.getOutPortsSync());
  *     // prints: [ "system:capture_1", "system:capture_2" ]
  */
-Handle<Value> getOutPortsSync(const Arguments &args) // {{{1
+void getOutPortsSync(const FunctionCallbackInfo<Value>& args) // {{{1
 {
-    HandleScope scope;
+    Isolate* isolate = args.GetIsolate();
     NEED_JACK_CLIENT_OPENED();
 
     bool withOwn = true;
@@ -592,7 +573,7 @@ Handle<Value> getOutPortsSync(const Arguments &args) // {{{1
 
     Handle<Array> outPortsList = get_ports(withOwn, JackPortIsOutput);
 
-    return scope.Close(outPortsList);
+    args.GetReturnValue().Set(outPortsList);
 } // getOutPortsSync() }}}1
 
 /**
@@ -607,9 +588,9 @@ Handle<Value> getOutPortsSync(const Arguments &args) // {{{1
  *   console.log(jackConnector.getInPortsSync());
  *     // prints: [ "system:playback_1", "system:playback_2" ]
  */
-Handle<Value> getInPortsSync(const Arguments &args) // {{{1
+void getInPortsSync(const FunctionCallbackInfo<Value>& args) // {{{1
 {
-    HandleScope scope;
+    Isolate* isolate = args.GetIsolate();
     NEED_JACK_CLIENT_OPENED();
 
     bool withOwn = true;
@@ -619,7 +600,7 @@ Handle<Value> getInPortsSync(const Arguments &args) // {{{1
 
     Handle<Array> inPortsList = get_ports(withOwn, JackPortIsInput);
 
-    return scope.Close(inPortsList);
+    args.GetReturnValue().Set(inPortsList);
 } // getInPortsSync() }}}1
 
 /**
@@ -636,15 +617,17 @@ Handle<Value> getInPortsSync(const Arguments &args) // {{{1
  *     // false
  * @returns {v8::Boolean} portExists
  */
-Handle<Value> portExistsSync(const Arguments &args) // {{{1
+void portExistsSync(const FunctionCallbackInfo<Value>& args) // {{{1
 {
-    HandleScope scope;
+    Isolate* isolate = args.GetIsolate();
     NEED_JACK_CLIENT_OPENED();
 
-    String::AsciiValue checkPortName_arg(args[0]->ToString());
+    String::Utf8Value checkPortName_arg(isolate, args[0]);
     char *checkPortName = *checkPortName_arg;
 
-    return scope.Close(Boolean::New(check_port_exists(checkPortName, 0)));
+    args.GetReturnValue().Set(
+        Boolean::New(isolate, check_port_exists(checkPortName, 0))
+    );
 } // portExistsSync() }}}1
 
 /**
@@ -661,15 +644,17 @@ Handle<Value> portExistsSync(const Arguments &args) // {{{1
  *     // true
  * @returns {v8::Boolean} outPortExists
  */
-Handle<Value> outPortExistsSync(const Arguments &args) // {{{1
+void outPortExistsSync(const FunctionCallbackInfo<Value>& args) // {{{1
 {
-    HandleScope scope;
+    Isolate* isolate = args.GetIsolate();
     NEED_JACK_CLIENT_OPENED();
 
-    String::AsciiValue checkPortName_arg(args[0]->ToString());
+    String::Utf8Value checkPortName_arg(isolate, args[0]);
     char *checkPortName = *checkPortName_arg;
 
-    return scope.Close(Boolean::New(check_port_exists(checkPortName, JackPortIsOutput)));
+    args.GetReturnValue().Set(
+        Boolean::New(isolate, check_port_exists(checkPortName, JackPortIsOutput))
+    );
 } // outPortExistsSync() }}}1
 
 /**
@@ -686,15 +671,17 @@ Handle<Value> outPortExistsSync(const Arguments &args) // {{{1
  *     // false
  * @returns {v8::Boolean} inPortExists
  */
-Handle<Value> inPortExistsSync(const Arguments &args) // {{{1
+void inPortExistsSync(const FunctionCallbackInfo<Value>& args) // {{{1
 {
-    HandleScope scope;
+    Isolate* isolate = args.GetIsolate();
     NEED_JACK_CLIENT_OPENED();
 
-    String::AsciiValue checkPortName_arg(args[0]->ToString());
+    String::Utf8Value checkPortName_arg(isolate, args[0]);
     char *checkPortName = *checkPortName_arg;
 
-    return scope.Close(Boolean::New(check_port_exists(checkPortName, JackPortIsInput)));
+    args.GetReturnValue().Set(
+        Boolean::New(isolate, check_port_exists(checkPortName, JackPortIsInput))
+    );
 } // inPortExistsSync() }}}1
 
 /**
@@ -713,21 +700,21 @@ Handle<Value> inPortExistsSync(const Arguments &args) // {{{1
  *   jackConnector.activateSync();
  * @returns {v8::Undefined}
  */
-Handle<Value> bindProcessSync(const Arguments &args) // {{{1
+void bindProcessSync(const FunctionCallbackInfo<Value>& args) // {{{1
 {
-    HandleScope scope;
+    Isolate* isolate = args.GetIsolate();
     NEED_JACK_CLIENT_OPENED();
 
     if ( ! args[0]->IsFunction()) {
-        ThrowException(Exception::TypeError(String::New("Callback argument must be a function")));
-        return scope.Close(Undefined());
+        isolate->ThrowException(Exception::TypeError(
+            String::NewFromUtf8(isolate, "Callback argument must be a function")
+        ));
+        return;
     }
 
     Local<Function> callback = Local<Function>::Cast( args[0] );
-    processCallback = Persistent<Function>::New( callback );
+    processCallback.Reset(isolate, callback);
     hasProcessCallback = true;
-
-    return scope.Close(Undefined());
 } // bindProcessSync() }}}1
 
 
@@ -739,12 +726,13 @@ Handle<Value> bindProcessSync(const Arguments &args) // {{{1
  * @private
  * @param {bool} withOwn Get ports of this client too
  * @param {unsigned long} flags Sum of ports filter
- * @returns {v8::Array} allPortsList Array of full ports names strings
- * @example Handle<Array> portsList = get_ports(true, 0);
+ * @returns {v8::Array} inPortsList Array of full ports names strings
  * @example Handle<Array> outPortsList = get_ports(false, JackPortIsOutput);
  */
 Handle<Array> get_ports(bool withOwn, unsigned long flags) // {{{1
 {
+    Isolate* isolate = Isolate::GetCurrent();
+
     unsigned int ports_count = 0;
     const char** jack_ports_list;
     jack_ports_list = jack_get_ports(::client, NULL, NULL, flags);
@@ -775,16 +763,16 @@ Handle<Array> get_ports(bool withOwn, unsigned long flags) // {{{1
 
     Local<Array> allPortsList;
     if (withOwn) {
-        allPortsList = Array::New(ports_count);
+        allPortsList = Array::New(isolate, ports_count);
         for (unsigned int i=0; i<ports_count; i++) {
-            allPortsList->Set(i, String::NewSymbol(jack_ports_list[i]));
+            allPortsList->Set(i, String::NewFromUtf8(isolate, jack_ports_list[i]));
         }
     } else {
-        allPortsList = Array::New(parsed_ports_count);
+        allPortsList = Array::New(isolate, parsed_ports_count);
         for (unsigned int i=0; i<ports_count; i++) {
             for (unsigned int n=0; ; n++) {
                 if (n>=STR_SIZE-1) {
-                    allPortsList->Set(i, String::NewSymbol(jack_ports_list[i]));
+                    allPortsList->Set(i, String::NewFromUtf8(isolate, jack_ports_list[i]));
                     break;
                 }
 
@@ -793,7 +781,7 @@ Handle<Array> get_ports(bool withOwn, unsigned long flags) // {{{1
                 }
 
                 if (client_name[n] != jack_ports_list[i][n]) {
-                    allPortsList->Set(i, String::NewSymbol(jack_ports_list[i]));
+                    allPortsList->Set(i, String::NewFromUtf8(isolate, jack_ports_list[i]));
                     break;
                 }
             }
@@ -954,9 +942,11 @@ int check_port_connection(const char *src_port_name, const char *dst_port_name) 
  */
 bool check_port_exists(char *check_port_name, unsigned long flags) // {{{1
 {
+    Isolate *isolate = Isolate::GetCurrent();
+
     Handle<Array> portsList = get_ports(true, flags);
     for (uint8_t i=0; i<portsList->Length(); i++) {
-        String::AsciiValue port_name_arg(portsList->Get(i)->ToString());
+        String::Utf8Value port_name_arg(isolate, portsList->Get(i)->ToString());
         char *port_name = *port_name_arg;
 
         for (uint16_t n=0; ; n++) {
@@ -1007,7 +997,6 @@ int16_t get_own_out_port_index(char* short_port_name) // {{{1
 
 #define UV_PROCESS_STOP() \
         { \
-            scope.Close(Undefined()); \
             delete task; \
             baton = NULL; \
             uv_sem_post(&semaphore); \
@@ -1017,43 +1006,45 @@ int16_t get_own_out_port_index(char* short_port_name) // {{{1
         { \
             const uint8_t argc = 1; \
             Local<Value> argv[argc] = { \
-                Local<Value>::New( err ), \
+                Local<Value>::New( isolate, err ), \
             }; \
-            processCallback->Call(Context::GetCurrent()->Global(), argc, argv); \
+            Local<Function> cb = Local<Function>::New( isolate, processCallback ); \
+            cb->Call(isolate->GetCurrentContext()->Global(), argc, argv); \
             UV_PROCESS_STOP(); \
         }
 
 void uv_process(uv_work_t* task, int status) // {{{2
 {
-    HandleScope scope;
+    Isolate *isolate = Isolate::GetCurrent();
 
     uint16_t nframes = *((uint16_t*)(&task->data));
 
-    Local<Object> capture = Object::New();
+    Local<Object> capture = Object::New(isolate);
     for (uint8_t i=0; i<own_in_ports_size; i++) {
-        Local<Array> portBuf = Array::New(nframes);
+        Local<Array> portBuf = Array::New(isolate, nframes);
         for (uint16_t n=0; n<nframes; n++) {
-            Local<Number> sample = Number::New( capture_buf[i][n] );
+            Local<Number> sample = Number::New( isolate, capture_buf[i][n] );
             portBuf->Set(n, sample);
         }
         capture->Set(
-            String::NewSymbol(own_in_ports_short_names[i]),
+            String::NewFromUtf8(isolate, own_in_ports_short_names[i]),
             portBuf
         );
     }
 
     const uint8_t argc = 3;
     Local<Value> argv[argc] = {
-        Local<Value>::New( Null() ),
-        Local<Number>::New( Number::New( nframes ) ),
-        Local<Object>::New( capture )
+        Local<Value>::New( isolate, Null(isolate) ),
+        Local<Number>::New( isolate, Number::New( isolate, nframes ) ),
+        Local<Object>::New( isolate, capture )
     };
+    Local<Function> cb = Local<Function>::New( isolate, processCallback );
     Local<Value> retval =
-        processCallback->Call(Context::GetCurrent()->Global(), argc, argv);
+        cb->Call(isolate->GetCurrentContext()->Global(), argc, argv);
 
     if (!retval->IsNull() && !retval->IsUndefined() && !retval->IsObject()) {
         UV_PROCESS_EXCEPTION(
-            Exception::TypeError(String::New(
+            Exception::TypeError(String::NewFromUtf8(isolate,
                 "Returned value of \"process\" callback must be an object"
                 " of port{String}:buffer{Array.<Number|Float>} values"
                 " or null or undefined"))
@@ -1067,25 +1058,27 @@ void uv_process(uv_work_t* task, int status) // {{{2
             Local<Value> key = keys->Get(i);
             if (!key->IsString()) {
                 UV_PROCESS_EXCEPTION(
-                    Exception::TypeError(String::New(
+                    Exception::TypeError(String::NewFromUtf8(isolate,
                         "Incorrect key type in returned value of \"process\""
                         " callback, must be a string (own port name)"))
                 );
             }
-            String::AsciiValue port_name(key->ToString());
+            String::Utf8Value port_name(isolate, key->ToString());
 
             int16_t port_index = get_own_out_port_index(*port_name);
             if (port_index == -1) {
                 char err[] = "Port \"%s\" not found";
                 char err_msg[STR_SIZE + sizeof(err)];
                 sprintf(err_msg, err, *port_name);
-                UV_PROCESS_EXCEPTION(Exception::Error(String::New(err_msg)));
+                UV_PROCESS_EXCEPTION(
+                    Exception::Error(String::NewFromUtf8(isolate, err_msg))
+                );
             }
 
             Local<Value> val = obj->Get(key);
             if (!val->IsArray()) {
                 UV_PROCESS_EXCEPTION(
-                    Exception::TypeError(String::New(
+                    Exception::TypeError(String::NewFromUtf8(isolate,
                         "Incorrect buffer type of returned value of \"process\""
                         " callback, must be an Array<Float|Number>"))
                 );
@@ -1094,7 +1087,7 @@ void uv_process(uv_work_t* task, int status) // {{{2
 
             if (buffer->Length() != nframes) {
                 UV_PROCESS_EXCEPTION(
-                    Exception::RangeError(String::New(
+                    Exception::RangeError(String::NewFromUtf8(isolate,
                         "Incorrect buffer size of returned value"
                         " of \"process\" callback"))
                 );
@@ -1104,13 +1097,13 @@ void uv_process(uv_work_t* task, int status) // {{{2
                 Local<Value> sample = buffer->Get(sample_i);
                 if (!sample->IsNumber()) {
                     UV_PROCESS_EXCEPTION(
-                        Exception::TypeError(String::New(
+                        Exception::TypeError(String::NewFromUtf8(isolate,
                             "Incorrect sample type of returned value"
                             " of \"process\" callback"
                             ", must be a {Number|Float}"))
                     );
                 }
-                playback_buf[port_index][sample_i] = sample->ToNumber()->Value();
+                playback_buf[port_index][sample_i] = Local<Number>::Cast(sample)->Value();
             }
         } // for (ports)
     } // if we has something to output from callback
@@ -1162,14 +1155,15 @@ int jack_process(jack_nframes_t nframes, void *arg) // {{{2
  *   jackConnector.openClientSync('jack_client_name');
  *   console.log( jackConnector.getSampleRateSync() );
  */
-Handle<Value> getSampleRateSync(const Arguments &args) // {{{1
+void getSampleRateSync(const FunctionCallbackInfo<Value>& args) // {{{1
 {
-    HandleScope scope;
+    Isolate* isolate = args.GetIsolate();
     NEED_JACK_CLIENT_OPENED();
     Local<Number> val = Local<Number>::New(
-        Number::New( jack_get_sample_rate(client) )
+        isolate,
+        Number::New( isolate, jack_get_sample_rate(client) )
     );
-    return scope.Close(val);
+    args.GetReturnValue().Set(val);
 } // getSampleRateSync() }}}1
 
 /**
@@ -1182,97 +1176,65 @@ Handle<Value> getSampleRateSync(const Arguments &args) // {{{1
  *   jackConnector.openClientSync('jack_client_name');
  *   console.log( jackConnector.getBufferSizeSync() );
  */
-Handle<Value> getBufferSizeSync(const Arguments &args) // {{{1
+void getBufferSizeSync(const FunctionCallbackInfo<Value>& args) // {{{1
 {
-    HandleScope scope;
+    Isolate* isolate = args.GetIsolate();
     NEED_JACK_CLIENT_OPENED();
     Local<Number> val = Local<Number>::New(
-        Number::New( jack_get_buffer_size(client) )
+        isolate,
+        Number::New( isolate, jack_get_buffer_size(client) )
     );
-    return scope.Close(val);
+    args.GetReturnValue().Set(val);
 } // getBufferSizeSync() }}}1
 
-void init(Handle<Object> target) // {{{1
+void init(Local<Object> exports) // {{{1
 {
 
-    target->Set( String::NewSymbol("getVersion"),
-                 FunctionTemplate::New(getVersion)->GetFunction() );
+    NODE_SET_METHOD( exports, "getVersion", getVersion );
 
     // client init
 
-    target->Set( String::NewSymbol("checkClientOpenedSync"),
-                 FunctionTemplate::New(checkClientOpenedSync)->GetFunction() );
-
-    target->Set( String::NewSymbol("openClientSync"),
-                 FunctionTemplate::New(openClientSync)->GetFunction() );
-
-    target->Set( String::NewSymbol("closeClient"),
-                 FunctionTemplate::New(closeClient)->GetFunction() );
+    NODE_SET_METHOD( exports, "checkClientOpenedSync", checkClientOpenedSync );
+    NODE_SET_METHOD( exports, "openClientSync", openClientSync );
+    NODE_SET_METHOD( exports, "closeClient", closeClient );
 
     // registering ports
 
-    target->Set( String::NewSymbol("registerInPortSync"),
-                 FunctionTemplate::New(registerInPortSync)->GetFunction() );
-
-    target->Set( String::NewSymbol("registerOutPortSync"),
-                 FunctionTemplate::New(registerOutPortSync)->GetFunction() );
-
-    target->Set( String::NewSymbol("unregisterPortSync"),
-                 FunctionTemplate::New(unregisterPortSync)->GetFunction() );
+    NODE_SET_METHOD( exports, "registerInPortSync", registerInPortSync );
+    NODE_SET_METHOD( exports, "registerOutPortSync", registerOutPortSync );
+    NODE_SET_METHOD( exports, "unregisterPortSync", unregisterPortSync );
 
     // port connections
 
-    target->Set( String::NewSymbol("connectPortSync"),
-                 FunctionTemplate::New(connectPortSync)->GetFunction() );
-
-    target->Set( String::NewSymbol("disconnectPortSync"),
-                 FunctionTemplate::New(disconnectPortSync)->GetFunction() );
+    NODE_SET_METHOD( exports, "connectPortSync", connectPortSync );
+    NODE_SET_METHOD( exports, "disconnectPortSync", disconnectPortSync );
 
     // get ports
 
-    target->Set( String::NewSymbol("getAllPortsSync"),
-                 FunctionTemplate::New(getAllPortsSync)->GetFunction() );
-
-    target->Set( String::NewSymbol("getOutPortsSync"),
-                 FunctionTemplate::New(getOutPortsSync)->GetFunction() );
-
-    target->Set( String::NewSymbol("getInPortsSync"),
-                 FunctionTemplate::New(getInPortsSync)->GetFunction() );
+    NODE_SET_METHOD( exports, "getAllPortsSync", getAllPortsSync );
+    NODE_SET_METHOD( exports, "getOutPortsSync", getOutPortsSync );
+    NODE_SET_METHOD( exports, "getInPortsSync", getInPortsSync );
 
     // port exists
 
-    target->Set( String::NewSymbol("portExistsSync"),
-                 FunctionTemplate::New(portExistsSync)->GetFunction() );
-
-    target->Set( String::NewSymbol("outPortExistsSync"),
-                 FunctionTemplate::New(outPortExistsSync)->GetFunction() );
-
-    target->Set( String::NewSymbol("inPortExistsSync"),
-                 FunctionTemplate::New(inPortExistsSync)->GetFunction() );
+    NODE_SET_METHOD( exports, "portExistsSync", portExistsSync );
+    NODE_SET_METHOD( exports, "outPortExistsSync", outPortExistsSync );
+    NODE_SET_METHOD( exports, "inPortExistsSync", inPortExistsSync );
 
     // sound process
 
-    target->Set( String::NewSymbol("bindProcessSync"),
-                 FunctionTemplate::New(bindProcessSync)->GetFunction() );
+    NODE_SET_METHOD( exports, "bindProcessSync", bindProcessSync );
 
     // activating client
 
-    target->Set( String::NewSymbol("checkActiveSync"),
-                 FunctionTemplate::New(checkActiveSync)->GetFunction() );
-
-    target->Set( String::NewSymbol("activateSync"),
-                 FunctionTemplate::New(activateSync)->GetFunction() );
-
-    target->Set( String::NewSymbol("deactivateSync"),
-                 FunctionTemplate::New(deactivateSync)->GetFunction() );
+    NODE_SET_METHOD( exports, "checkActiveSync", checkActiveSync );
+    NODE_SET_METHOD( exports, "activateSync", activateSync );
+    NODE_SET_METHOD( exports, "deactivateSync", deactivateSync );
 
     // get some jack info
 
-    target->Set( String::NewSymbol("getSampleRateSync"),
-                 FunctionTemplate::New(getSampleRateSync)->GetFunction() );
-
-    target->Set( String::NewSymbol("getBufferSizeSync"),
-                 FunctionTemplate::New(getBufferSizeSync)->GetFunction() );
+    NODE_SET_METHOD( exports, "getSampleRateSync", getSampleRateSync );
+    NODE_SET_METHOD( exports, "getBufferSizeSync", getBufferSizeSync );
 
 } // init() }}}1
 
