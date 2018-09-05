@@ -3,7 +3,7 @@ Node.JS JACK-connector
 
 Bindings JACK-Audio-Connection-Kit for Node.JS
 
-🎉🎉🎉 **Now it's (probably) working on node 10.x!!**　🎉🎉🎉
+🎉🎉🎉 **Now it's (probably) working on node 10.x!!**　🎉🎉🎉  
 I'm afraid of memory leak, I'm pretty n00b at native coding 😖
 
 Install
