@@ -203,6 +203,7 @@ void openClientSync(const FunctionCallbackInfo<Value>& args) // {{{1
 void uv_close_task(uv_work_t* task, int status)
 {
     Isolate *isolate = Isolate::GetCurrent();
+    HandleScope scope(isolate);
 
     if (baton) {
         UV_CLOSE_TASK_CLEANUP();
@@ -255,6 +256,7 @@ void uv_close_task(uv_work_t* task, int status)
 void closeClient(const FunctionCallbackInfo<Value>& args) // {{{1
 {
     Isolate* isolate = args.GetIsolate();
+    HandleScope scope(isolate);
 
     if (closing) {
         THROW_ERR("Already started closing JACK-client");
@@ -703,6 +705,7 @@ void inPortExistsSync(const FunctionCallbackInfo<Value>& args) // {{{1
 void bindProcessSync(const FunctionCallbackInfo<Value>& args) // {{{1
 {
     Isolate* isolate = args.GetIsolate();
+    HandleScope scope(isolate);
     NEED_JACK_CLIENT_OPENED();
 
     if ( ! args[0]->IsFunction()) {
@@ -732,6 +735,7 @@ void bindProcessSync(const FunctionCallbackInfo<Value>& args) // {{{1
 Handle<Array> get_ports(bool withOwn, unsigned long flags) // {{{1
 {
     Isolate* isolate = Isolate::GetCurrent();
+    HandleScope scope(isolate);
 
     unsigned int ports_count = 0;
     const char** jack_ports_list;
@@ -1016,6 +1020,7 @@ int16_t get_own_out_port_index(char* short_port_name) // {{{1
 void uv_process(uv_work_t* task, int status) // {{{2
 {
     Isolate *isolate = Isolate::GetCurrent();
+    HandleScope scope(isolate);
 
     uint16_t nframes = *((uint16_t*)(&task->data));
 
@@ -1158,7 +1163,9 @@ int jack_process(jack_nframes_t nframes, void *arg) // {{{2
 void getSampleRateSync(const FunctionCallbackInfo<Value>& args) // {{{1
 {
     Isolate* isolate = args.GetIsolate();
+    HandleScope scope(isolate);
     NEED_JACK_CLIENT_OPENED();
+
     Local<Number> val = Local<Number>::New(
         isolate,
         Number::New( isolate, jack_get_sample_rate(client) )
@@ -1179,7 +1186,9 @@ void getSampleRateSync(const FunctionCallbackInfo<Value>& args) // {{{1
 void getBufferSizeSync(const FunctionCallbackInfo<Value>& args) // {{{1
 {
     Isolate* isolate = args.GetIsolate();
+    HandleScope scope(isolate);
     NEED_JACK_CLIENT_OPENED();
+
     Local<Number> val = Local<Number>::New(
         isolate,
         Number::New( isolate, jack_get_buffer_size(client) )
