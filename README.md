@@ -3,10 +3,13 @@ Node.JS JACK-connector
 
 Bindings JACK-Audio-Connection-Kit for Node.JS
 
+🎉🎉🎉 **Now it's (probably) working on node 10.x!!**　🎉🎉🎉
+I'm afraid of memory leak, I'm pretty n00b at native coding 😖
+
 Install
 =======
 ```bash
-npm install jack-connector
+npm install fms-cat/node-jack-connector#master
 ```
 
 Build requirements
@@ -57,11 +60,6 @@ More examples
 =============
 
 [examples/](./examples/)
-
-Author
-======
-
-Viacheslav Lotsmanov
 
 License
 =======
